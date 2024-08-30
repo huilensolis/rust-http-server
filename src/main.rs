@@ -4,13 +4,16 @@ use std::{
     net::{TcpListener, TcpStream},
 };
 
+use tcp_server::ThreadPool;
+
 fn main() {
     let tcp_listener = TcpListener::bind("localhost:7878").unwrap();
+    let thread_pool = ThreadPool::new(18);
 
     for stream in tcp_listener.incoming() {
         let stream = stream.unwrap();
 
-        handle_connection(stream)
+        thread_pool.execute(|| handle_connection(stream))
     }
 }
 
