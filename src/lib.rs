@@ -1,34 +1,38 @@
 use std::{
     sync::{mpsc, Arc, Mutex},
-    thread::{self, sleep},
+    thread::{self},
 };
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
 struct Worker {
     id: usize,
-    join_permission: thread::JoinHandle<()>,
+    join_permission: Option<thread::JoinHandle<()>>,
 }
 
 impl Worker {
     fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Result<Worker, String> {
         let thread_factory = thread::Builder::new();
-        let spawned_thread = thread_factory.spawn(move || {
-            let job = receiver
-                .lock()
-                .expect("could not lock the receiver")
-                .recv()
-                .unwrap();
+        let spawned_thread = thread_factory.spawn(move || loop {
+            let thread_message = receiver.lock().expect("could not lock the receiver").recv();
 
-            println!("worker with id {id} got a job; executing");
+            match thread_message {
+                Ok(job) => {
+                    println!("worker with id {id} got a job; executing");
 
-            job()
+                    job()
+                }
+                Err(_) => {
+                    println!("worker with id {id} disconnected; shutting down");
+                    break;
+                }
+            }
         });
 
         match spawned_thread {
             Ok(thread_join_permission) => Ok(Worker {
                 id,
-                join_permission: thread_join_permission,
+                join_permission: Some(thread_join_permission),
             }),
             Err(error) => Err(format!(
                 "thread with id {id} could not be spawned. error message: {error}"
@@ -39,7 +43,7 @@ impl Worker {
 
 pub struct ThreadPool {
     workers: Vec<Worker>,
-    sender: mpsc::Sender<Job>,
+    sender: Option<mpsc::Sender<Job>>,
 }
 
 impl ThreadPool {
@@ -72,7 +76,10 @@ impl ThreadPool {
             }
         }
 
-        ThreadPool { workers, sender }
+        ThreadPool {
+            workers,
+            sender: Some(sender),
+        }
     }
 
     pub fn execute<C>(&self, clousure: C)
@@ -81,6 +88,20 @@ impl ThreadPool {
     {
         let job = Box::new(clousure);
 
-        self.sender.send(job).unwrap();
+        self.sender.as_ref().unwrap().send(job).unwrap();
+    }
+}
+
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        drop(self.sender.take());
+
+        for worker in &mut self.workers {
+            println!("shutting down worker {}", worker.id);
+
+            if let Some(thread) = worker.join_permission.take() {
+                thread.join().unwrap()
+            };
+        }
     }
 }
