@@ -1,7 +1,9 @@
 use std::{
+    sync::{mpsc, Arc, Mutex},
     thread::{self, sleep},
-    time::Duration,
 };
+
+type Job = Box<dyn FnOnce() + Send + 'static>;
 
 struct Worker {
     id: usize,
@@ -9,9 +11,19 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(id: usize) -> Result<Worker, String> {
+    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Result<Worker, String> {
         let thread_factory = thread::Builder::new();
-        let spawned_thread = thread_factory.spawn(|| sleep(Duration::new(10, 0)));
+        let spawned_thread = thread_factory.spawn(move || {
+            let job = receiver
+                .lock()
+                .expect("could not lock the receiver")
+                .recv()
+                .unwrap();
+
+            println!("worker with id {id} got a job; executing");
+
+            job()
+        });
 
         match spawned_thread {
             Ok(thread_join_permission) => Ok(Worker {
@@ -27,6 +39,7 @@ impl Worker {
 
 pub struct ThreadPool {
     workers: Vec<Worker>,
+    sender: mpsc::Sender<Job>,
 }
 
 impl ThreadPool {
@@ -40,10 +53,14 @@ impl ThreadPool {
     pub fn new(max_threads: usize) -> ThreadPool {
         assert!(max_threads > 0);
 
+        let (sender, receiver) = mpsc::channel();
+
+        let receiver = Arc::new(Mutex::new(receiver));
+
         let mut workers = Vec::with_capacity(max_threads);
 
         for index in 0..max_threads {
-            let new_worker = Worker::new(index);
+            let new_worker = Worker::new(index, Arc::clone(&receiver));
 
             match new_worker {
                 Ok(worker) => {
@@ -55,15 +72,15 @@ impl ThreadPool {
             }
         }
 
-        println!("workers len = {}", workers.len());
-
-        ThreadPool { workers }
+        ThreadPool { workers, sender }
     }
 
     pub fn execute<C>(&self, clousure: C)
     where
         C: FnOnce() + Send + 'static,
     {
-        // clousure()
+        let job = Box::new(clousure);
+
+        self.sender.send(job).unwrap();
     }
 }
